@@ -167,7 +167,7 @@ class EventformerBlock(nn.Module):
         paaa_out = self.paaa(
             self.norm1(features),
             polarities,
-            attn_bias=temporal_bias
+            timestamps=times
         )
         paaa_out = features + paaa_out
         paaa_out = paaa_out + self.ffn(self.norm2(paaa_out))
