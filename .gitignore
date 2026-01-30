@@ -39,7 +39,8 @@ env/
 
 # Data
 data/
-datasets/
+# Note: datasets/ folder for actual data, but code/datasets/ is the Python module
+/datasets/
 *.h5
 *.hdf5
 *.npy
