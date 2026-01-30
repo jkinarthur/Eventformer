@@ -42,10 +42,9 @@ class EventEmbedding(nn.Module):
             num_scales=num_fourier_scales
         )
         
-        # Spatial positional encoding
+        # Spatial positional encoding (image_size passed at forward time)
         self.spatial_pe = SpatialPositionalEncoding(
-            embed_dim=embed_dim,
-            image_size=image_size
+            embed_dim=embed_dim
         )
         
         # Polarity embedding
@@ -76,7 +75,7 @@ class EventEmbedding(nn.Module):
         """
         # Get individual embeddings
         time_embed = self.ctpe(times)  # [B, N, D]
-        spatial_embed = self.spatial_pe(coords)  # [B, N, D]
+        spatial_embed = self.spatial_pe(coords, self.image_size)  # [B, N, D]
         polarity_embed = self.polarity_embed(polarities)  # [B, N, D]
         
         # Concatenate and fuse
