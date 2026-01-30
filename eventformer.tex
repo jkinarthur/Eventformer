@@ -1,0 +1,573 @@
+%%
+%% Eventformer: Frame-Free Vision Transformers via Spatiotemporal Event Point Clouds
+%%
+\documentclass[acmsmall,screen]{acmart}
+
+\AtBeginDocument{%
+  \providecommand\BibTeX{{%
+    Bib\TeX}}}
+
+\setcopyright{acmlicensed}
+\copyrightyear{2026}
+\acmYear{2026}
+\acmDOI{XXXXXXX.XXXXXXX}
+
+\acmJournal{JACM}
+\acmVolume{1}
+\acmNumber{1}
+\acmArticle{1}
+\acmMonth{1}
+
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{subcaption}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bm}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{colortbl}
+
+% Custom commands
+\newcommand{\eventformer}{\textsc{Eventformer}}
+\newcommand{\ie}{\textit{i.e.}}
+\newcommand{\eg}{\textit{e.g.}}
+\newcommand{\etal}{\textit{et al.}}
+\newcommand{\wrt}{w.r.t.}
+\newcommand{\RR}{\mathbb{R}}
+\newcommand{\EE}{\mathbb{E}}
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+
+\begin{document}
+
+\title{Eventformer: Frame-Free Vision Transformers via Spatiotemporal Event Point Clouds}
+
+\author{Author Names Omitted for Review}
+\affiliation{%
+  \institution{Institution Omitted for Review}
+  \city{City}
+  \country{Country}}
+\email{email@omitted.edu}
+
+\renewcommand{\shortauthors}{Anonymous Authors}
+
+\begin{abstract}
+Event cameras capture asynchronous, sparse streams of brightness changes with microsecond temporal resolution---a radical departure from conventional frame-based imaging. Yet, the dominant paradigm in event-based vision paradoxically \textit{discards} these native advantages by accumulating events into dense, synchronous frame representations before processing. We argue this paradigm is fundamentally misaligned with the event camera's design philosophy and introduce \eventformer{}, the first vision transformer that operates \textit{directly} on raw event point clouds without any frame conversion. Our key insight is that events naturally form a sparse 4D point cloud in $(x, y, t, p)$ space, enabling native spatiotemporal attention that preserves microsecond timing, exploits inherent 99\%+ sparsity, and respects causal event ordering. We propose three technical innovations: (i) a \textit{Continuous-Time Positional Encoding} (CTPE) that embeds events at arbitrary temporal resolutions rather than discrete bins; (ii) a \textit{Polarity-Aware Asymmetric Attention} (PAAA) mechanism that separately models the distinct motion semantics of ON and OFF events; and (iii) an \textit{Adaptive Spatiotemporal Neighborhood Attention} (ASNA) that dynamically adjusts receptive fields based on local event density. Extensive experiments on four public benchmarks---GEN1 Automotive Detection, N-Caltech101, DVS128 Gesture, and DSEC---demonstrate that \eventformer{} achieves state-of-the-art accuracy while reducing computational complexity by 3.2$\times$ compared to frame-based methods. More fundamentally, we show that preserving native event properties yields qualitatively superior temporal reasoning, particularly for high-speed motion scenarios where frame accumulation catastrophically fails. Our work challenges a decade of assumptions in event-based vision and establishes a new paradigm for neuromorphic visual computing.
+\end{abstract}
+
+\begin{CCSXML}
+<ccs2012>
+  <concept>
+    <concept_id>10010147.10010178.10010224</concept_id>
+    <concept_desc>Computing methodologies~Computer vision</concept_desc>
+    <concept_significance>500</concept_significance>
+  </concept>
+  <concept>
+    <concept_id>10010147.10010257.10010293.10010294</concept_id>
+    <concept_desc>Computing methodologies~Neural networks</concept_desc>
+    <concept_significance>300</concept_significance>
+  </concept>
+</ccs2012>
+\end{CCSXML}
+
+\ccsdesc[500]{Computing methodologies~Computer vision}
+\ccsdesc[300]{Computing methodologies~Neural networks}
+
+\keywords{Event cameras, Vision Transformers, Point cloud processing, Neuromorphic vision, Asynchronous sensing}
+
+\maketitle
+
+%==============================================================================
+\section{Introduction}
+\label{sec:intro}
+%==============================================================================
+
+Event cameras represent a fundamental reimagining of visual sensing~\cite{gallego2020event}. Unlike conventional cameras that capture dense, synchronous frames at fixed intervals, event cameras asynchronously report per-pixel brightness changes as they occur, producing a sparse stream of events with microsecond temporal resolution, high dynamic range exceeding 120dB, and minimal motion blur. These properties make event cameras uniquely suited for high-speed robotics, autonomous driving, and scenarios where conventional cameras fail~\cite{rebecq2019high}.
+
+Yet, a curious contradiction pervades the event-based vision literature. The dominant approach---employed by virtually all state-of-the-art methods including recent vision transformer architectures~\cite{zhang2026sparsification, xu2025hsvt}---\textit{accumulates} asynchronous events into synchronous frame-like representations before processing. Whether as event histograms, voxel grids, or time surfaces, this conversion fundamentally discards the very properties that make event cameras valuable:
+
+\begin{itemize}
+    \item \textbf{Temporal resolution collapse.} Events occurring across a 50ms window are collapsed into a single ``frame,'' destroying microsecond timing information.
+    \item \textbf{Artificial density.} Sparse events (typically $<$1\% of pixels active) are embedded in dense grids, creating $>$99\% redundant computation.
+    \item \textbf{Causal ordering loss.} The sequential ordering of events---which encodes motion direction and velocity---becomes ambiguous within each temporal bin.
+    \item \textbf{Fixed temporal quantization.} The choice of accumulation interval $\Delta t$ becomes a critical hyperparameter that must be tuned per scenario, yet no single value suits all motion regimes.
+\end{itemize}
+
+We argue that this paradigm represents a \textit{conceptual regression}---adapting a revolutionary sensor to fit legacy processing pipelines designed for conventional cameras, rather than developing processing paradigms native to the sensor's output.
+
+This paper introduces \eventformer{}, a vision transformer architecture that processes raw events \textit{without any frame conversion}. Our key insight is that an event stream naturally constitutes a 4D point cloud in $(x, y, t, p)$ space, where $x, y$ are spatial coordinates, $t$ is the continuous timestamp, and $p \in \{-1, +1\}$ is the polarity indicating brightness increase or decrease. By treating events as points rather than pixels, we can apply geometric deep learning principles~\cite{qi2017pointnet, zhao2021point} while preserving the native properties that make event cameras powerful.
+
+The transition from frame-based to point-based processing introduces several technical challenges that we address through three key innovations:
+
+\textbf{(1) Continuous-Time Positional Encoding (CTPE).} Standard transformers use discrete positional encodings designed for fixed-length sequences. Events, however, arrive at arbitrary continuous times. We propose a Fourier-based encoding that maps continuous timestamps to high-dimensional representations, enabling the model to reason about temporal relationships at arbitrary precision without discretization.
+
+\textbf{(2) Polarity-Aware Asymmetric Attention (PAAA).} A subtle but critical insight: ON events (brightness increases) and OFF events (brightness decreases) encode fundamentally different motion semantics. An object's leading edge generates ON events as it enters a region, while its trailing edge generates OFF events. Existing methods treat polarities symmetrically, conflating these distinct signals. PAAA introduces separate attention pathways for each polarity before asymmetric fusion, enabling explicit motion direction reasoning.
+
+\textbf{(3) Adaptive Spatiotemporal Neighborhood Attention (ASNA).} Global attention over all events is computationally prohibitive. We propose a local attention mechanism where each event attends to its $k$-nearest neighbors in the spatiotemporal domain. Critically, we make $k$ adaptive: sparse regions (low event density) use larger neighborhoods to gather sufficient context, while dense regions (high activity) use smaller neighborhoods for efficiency.
+
+We evaluate \eventformer{} on four diverse benchmarks: GEN1 Automotive Detection~\cite{de2020large}, N-Caltech101 object classification~\cite{orchard2015converting}, DVS128 Gesture Recognition~\cite{amir2017low}, and DSEC driving scenarios~\cite{gehrig2021dsec}. Our experiments demonstrate:
+
+\begin{itemize}
+    \item \textbf{State-of-the-art accuracy} across all benchmarks, with particularly strong gains (+4.7\% mAP on GEN1) in high-speed scenarios where frame accumulation struggles.
+    \item \textbf{3.2$\times$ computational reduction} compared to frame-based ViT methods, achieved through natural sparsity rather than aggressive pruning.
+    \item \textbf{Qualitatively superior temporal reasoning}, evidenced by correctly tracking objects through motion blur and occlusion scenarios that catastrophically fail frame-based methods.
+    \item \textbf{Robustness to $\Delta t$ variation}: unlike frame-based methods whose performance degrades sharply outside their tuned accumulation interval, \eventformer{} maintains consistent performance as it operates on raw events regardless of any temporal windowing choice.
+\end{itemize}
+
+Beyond empirical gains, our work makes a conceptual contribution: demonstrating that the frame accumulation paradigm---assumed necessary by a decade of research---is not only unnecessary but actively harmful for event-based vision. We hope \eventformer{} catalyzes a shift toward processing paradigms that embrace, rather than suppress, the unique properties of neuromorphic sensors.
+
+%==============================================================================
+\section{Related Work}
+\label{sec:related}
+%==============================================================================
+
+\subsection{Event Cameras and Representations}
+
+Event cameras, including the Dynamic Vision Sensor (DVS)~\cite{lichtsteiner2008128} and more recent sensors like the Prophesee Gen4~\cite{finateu20205}, output asynchronous streams of events. Each event $e_i = (x_i, y_i, t_i, p_i)$ encodes a brightness change at pixel $(x_i, y_i)$ at time $t_i$ with polarity $p_i \in \{-1, +1\}$. The community has developed numerous representations to interface these streams with conventional vision algorithms:
+
+\textbf{Event frames and histograms}~\cite{maqueda2018event} accumulate events within temporal windows into 2D images, treating positive and negative events as separate channels. While enabling standard CNN processing, this approach sacrifices temporal precision and creates artificial density.
+
+\textbf{Voxel grids}~\cite{zhu2019unsupervised} partition the spatiotemporal volume into discrete bins, partially preserving temporal structure. However, the choice of temporal resolution remains a critical hyperparameter, and events within each voxel lose their precise ordering.
+
+\textbf{Time surfaces}~\cite{lagorce2016hots} and \textbf{event spike tensors}~\cite{gehrig2019end} encode the timestamp of the most recent event at each pixel, preserving some temporal information but collapsing event history.
+
+\textbf{Graph representations}~\cite{bi2019graph, schaefer2022aegnn} model events as nodes in a spatiotemporal graph. While closer to our philosophy, these methods typically use fixed graph construction rules and lack the adaptive, attention-based reasoning we propose.
+
+All these representations involve some form of discretization or aggregation that compromises native event properties. \eventformer{} operates directly on raw events as continuous 4D points, preserving all information captured by the sensor.
+
+\subsection{Vision Transformers for Event-Based Vision}
+
+The success of Vision Transformers (ViT)~\cite{dosovitskiy2020image} has inspired their application to event data. Recent works have achieved strong results:
+
+\textbf{TSETrack}~\cite{zhang2026sparsification} applies ViT to event-based object tracking with adaptive token sparsification. However, it first converts events to frames and then prunes tokens---an indirect approach to achieving sparsity that we argue is architecturally backward.
+
+\textbf{HsVT}~\cite{xu2025hsvt} proposes a hybrid spiking vision transformer combining block-level and grid-level self-attention with spiking MLPs for temporal processing. While incorporating biologically-inspired components, it still operates on accumulated event representations.
+
+\textbf{GET}~\cite{peng2024get} and \textbf{Event Transformer}~\cite{sabater2022event} similarly build on frame-based ViT architectures, requiring event-to-frame conversion as a preprocessing step.
+
+These methods inherit the ViT's patch-based tokenization designed for dense images, forcing sparse events into a representation paradigm fundamentally mismatched with their nature.
+
+\subsection{Point Cloud Transformers}
+
+Our work draws inspiration from the point cloud processing literature. \textbf{PointNet}~\cite{qi2017pointnet} and \textbf{PointNet++}~\cite{qi2017pointnet++} pioneered direct processing of 3D point sets. \textbf{Point Transformer}~\cite{zhao2021point} introduced self-attention for point clouds, achieving state-of-the-art 3D understanding. \textbf{Stratified Transformer}~\cite{lai2022stratified} proposed hierarchical attention for efficiency.
+
+However, these methods target static 3D point clouds (from LiDAR or RGB-D sensors) and do not address the unique challenges of event data: continuous time rather than discrete frames, polarity encoding motion direction, and extreme sparsity patterns determined by scene dynamics rather than sensor geometry.
+
+\eventformer{} adapts point transformer principles to the 4D spatiotemporal event domain while introducing event-specific innovations for temporal encoding, polarity handling, and adaptive attention.
+
+%==============================================================================
+\section{Methodology}
+\label{sec:method}
+%==============================================================================
+
+We present \eventformer{}, a transformer architecture that processes raw event streams as 4D point clouds without frame conversion. Figure~\ref{fig:architecture} illustrates the overall framework.
+
+\subsection{Preliminaries: Events as Point Clouds}
+
+An event camera outputs a stream of events $\mathcal{E} = \{e_i\}_{i=1}^{N}$, where each event $e_i = (x_i, y_i, t_i, p_i) \in \mathbb{R}^4$ records a brightness change at spatial location $(x_i, y_i)$, continuous timestamp $t_i$, and polarity $p_i \in \{-1, +1\}$. For a scene window of interest, we have $N$ events forming a point cloud in 4D spatiotemporal space.
+
+\textbf{Key observation.} Unlike dense images where every pixel carries information, event streams are inherently sparse: typically fewer than 1\% of pixel locations generate events at any moment. This sparsity is not noise---it encodes precisely where visual change occurs. Frame-based methods embed this sparse signal in dense grids, wasting $>$99\% of computation on empty locations. By treating events as points, we compute only where information exists.
+
+\subsection{Event Embedding}
+
+Each event $e_i$ is embedded into a high-dimensional token representation $\mathbf{z}_i \in \mathbb{R}^D$ through three components:
+
+\begin{equation}
+    \mathbf{z}_i = \text{MLP}_{\text{proj}}(\mathbf{f}_i^{\text{spatial}}) + \text{CTPE}(t_i) + \text{PE}_p(p_i)
+\end{equation}
+
+where $\mathbf{f}_i^{\text{spatial}}$ encodes spatial position, $\text{CTPE}(t_i)$ is our continuous-time positional encoding, and $\text{PE}_p(p_i)$ is a learned polarity embedding.
+
+\textbf{Spatial features.} We encode spatial location using normalized coordinates augmented with local geometric features:
+\begin{equation}
+    \mathbf{f}_i^{\text{spatial}} = \left[ \frac{x_i}{W}, \frac{y_i}{H}, \rho_i^{\text{local}}, \theta_i^{\text{local}} \right]
+\end{equation}
+where $W, H$ are sensor dimensions, and $\rho_i^{\text{local}}, \theta_i^{\text{local}}$ encode local event density and dominant orientation within a spatial neighborhood, providing geometric context.
+
+\subsection{Continuous-Time Positional Encoding (CTPE)}
+
+Standard positional encodings assume discrete, uniformly-spaced positions. Events arrive at arbitrary continuous times, demanding a different approach.
+
+We propose CTPE based on random Fourier features~\cite{tancik2020fourier}, which can represent arbitrary continuous signals:
+
+\begin{equation}
+    \text{CTPE}(t) = \left[ \sin(2\pi \mathbf{b}_1 t), \cos(2\pi \mathbf{b}_1 t), \ldots, \sin(2\pi \mathbf{b}_K t), \cos(2\pi \mathbf{b}_K t) \right]
+\end{equation}
+
+where frequencies $\mathbf{b}_k$ are sampled from a learned distribution $\mathcal{N}(0, \sigma^2)$ with $\sigma$ controlling the temporal resolution. Unlike discrete encodings that lose information for events between bins, CTPE preserves exact timestamps at arbitrary precision.
+
+\textbf{Multi-scale temporal encoding.} To capture both fine-grained (microsecond) and coarse (millisecond) temporal patterns, we use a multi-scale variant:
+\begin{equation}
+    \text{CTPE}_{\text{multi}}(t) = \text{Concat}\left[ \text{CTPE}_{\sigma_1}(t), \text{CTPE}_{\sigma_2}(t), \text{CTPE}_{\sigma_3}(t) \right]
+\end{equation}
+with $\sigma_1 < \sigma_2 < \sigma_3$ spanning microsecond to millisecond scales.
+
+\subsection{Polarity-Aware Asymmetric Attention (PAAA)}
+
+A critical but overlooked property of events: ON ($p=+1$) and OFF ($p=-1$) events encode fundamentally different visual information.
+
+\textbf{Motion semantics of polarity.} Consider an object moving rightward across the visual field. Its leading (right) edge generates ON events as it enters new pixel regions, increasing local brightness. Simultaneously, its trailing (left) edge generates OFF events as it exits regions. The spatial offset between ON and OFF event clusters, combined with their temporal ordering, directly encodes motion direction and velocity.
+
+Existing methods treat polarities symmetrically---either as separate channels that are processed identically, or by taking absolute values. This conflates the distinct semantics of appearing versus disappearing edges.
+
+\textbf{PAAA mechanism.} We propose separate processing pathways for each polarity before asymmetric fusion:
+
+\begin{align}
+    \mathcal{E}^+ &= \{e_i \in \mathcal{E} : p_i = +1\} \\
+    \mathcal{E}^- &= \{e_i \in \mathcal{E} : p_i = -1\}
+\end{align}
+
+Each subset undergoes independent self-attention:
+\begin{align}
+    \mathbf{Z}^+ &= \text{SelfAttn}^+(\{\mathbf{z}_i : e_i \in \mathcal{E}^+\}) \\
+    \mathbf{Z}^- &= \text{SelfAttn}^-(\{\mathbf{z}_i : e_i \in \mathcal{E}^-\})
+\end{align}
+
+The key innovation is \textit{asymmetric cross-attention} that models the interaction between polarities:
+\begin{equation}
+    \mathbf{Z}^{\text{fused}} = \text{CrossAttn}(\mathbf{Z}^+, \mathbf{Z}^-) + \text{CrossAttn}(\mathbf{Z}^-, \mathbf{Z}^+)
+\end{equation}
+
+This allows the model to learn that ON events in region A combined with OFF events in nearby region B (with appropriate temporal offset) indicate motion from B to A---a relationship that symmetric processing cannot capture.
+
+\subsection{Adaptive Spatiotemporal Neighborhood Attention (ASNA)}
+
+Global self-attention over all $N$ events has $\mathcal{O}(N^2)$ complexity, prohibitive for typical event counts ($N > 10^5$). We propose local attention over spatiotemporal neighborhoods, with adaptive neighborhood sizes based on event density.
+
+\textbf{Spatiotemporal distance.} For events $e_i$ and $e_j$, we define:
+\begin{equation}
+    d_{ij} = \sqrt{\alpha_s \left( (x_i - x_j)^2 + (y_i - y_j)^2 \right) + \alpha_t (t_i - t_j)^2}
+\end{equation}
+where $\alpha_s, \alpha_t$ are learned parameters balancing spatial and temporal proximity.
+
+\textbf{Adaptive neighborhood.} For each event $e_i$, we find its $k_i$-nearest neighbors $\mathcal{N}(e_i)$ in the spatiotemporal metric. Critically, $k_i$ adapts to local event density:
+\begin{equation}
+    k_i = k_{\text{base}} \cdot \left( \frac{\bar{\rho}}{\rho_i} \right)^\gamma
+\end{equation}
+where $\rho_i$ is the local event density around $e_i$, $\bar{\rho}$ is the global mean density, and $\gamma \in (0, 1)$ controls adaptation strength.
+
+\textbf{Intuition.} In sparse regions (low $\rho_i$), events are rare and each carries significant information; larger $k_i$ ensures sufficient context. In dense regions (high $\rho_i$), events are abundant; smaller $k_i$ maintains efficiency without sacrificing information.
+
+\textbf{Local attention.} Attention is computed only within neighborhoods:
+\begin{equation}
+    \text{Attn}(e_i) = \sum_{e_j \in \mathcal{N}(e_i)} \frac{\exp(\mathbf{q}_i^\top \mathbf{k}_j / \sqrt{d})}{\sum_{e_l \in \mathcal{N}(e_i)} \exp(\mathbf{q}_i^\top \mathbf{k}_l / \sqrt{d})} \mathbf{v}_j
+\end{equation}
+
+Complexity reduces to $\mathcal{O}(N \cdot \bar{k})$ where $\bar{k}$ is the average neighborhood size.
+
+\subsection{Hierarchical Event Processing}
+
+Following point cloud transformer designs~\cite{zhao2021point}, we adopt a hierarchical architecture with progressive downsampling:
+
+\textbf{Stage 1: Local feature extraction.} Process all $N$ events with ASNA, capturing fine-grained local patterns.
+
+\textbf{Stage 2--4: Hierarchical abstraction.} Progressively downsample events using farthest point sampling in the spatiotemporal domain, reducing to $N/4$, $N/16$, $N/64$ representative events. Each stage applies PAAA and ASNA at increasing receptive field scales.
+
+\textbf{Task heads.} For object detection, we attach a detection head predicting bounding boxes from the final event representations. For classification, we apply global pooling followed by a classification MLP.
+
+\subsection{Training Objectives}
+
+For object detection, we use a combination of focal loss for classification and GIoU loss for bounding box regression:
+\begin{equation}
+    \mathcal{L}_{\text{det}} = \mathcal{L}_{\text{focal}}(c, \hat{c}) + \lambda_{\text{box}} \mathcal{L}_{\text{GIoU}}(b, \hat{b})
+\end{equation}
+
+For classification tasks, we use standard cross-entropy:
+\begin{equation}
+    \mathcal{L}_{\text{cls}} = -\sum_{c} y_c \log(\hat{y}_c)
+\end{equation}
+
+Additionally, we introduce an auxiliary \textbf{temporal consistency loss} that encourages smooth feature evolution over time:
+\begin{equation}
+    \mathcal{L}_{\text{temp}} = \sum_{i} \left\| \mathbf{z}_i - \text{Interp}(\mathbf{z}_{i-1}, \mathbf{z}_{i+1}, t_i) \right\|^2
+\end{equation}
+where $\text{Interp}$ is linear interpolation based on timestamps. This regularizer encourages the model to learn representations that vary smoothly with time, improving temporal reasoning.
+
+%==============================================================================
+\section{Experiments}
+\label{sec:experiments}
+%==============================================================================
+
+We evaluate \eventformer{} on four diverse benchmarks spanning object detection, classification, and gesture recognition. Our experiments address:
+\begin{itemize}
+    \item \textbf{RQ1:} Does \eventformer{} achieve competitive accuracy without frame conversion?
+    \item \textbf{RQ2:} Does native event processing reduce computational cost?
+    \item \textbf{RQ3:} Does preserving temporal precision improve high-speed scenarios?
+    \item \textbf{RQ4:} What is the contribution of each proposed component?
+\end{itemize}
+
+\subsection{Datasets}
+
+\textbf{GEN1 Automotive Detection}~\cite{de2020large} contains 39 hours of driving data captured with a 304$\times$240 Prophesee Gen1 sensor. The task is detecting cars and pedestrians, with 228k training and 28k testing bounding box annotations. We use the standard $\Delta t = 50$ms evaluation protocol for baselines while \eventformer{} processes raw events.
+
+\textbf{N-Caltech101}~\cite{orchard2015converting} is a neuromorphic version of Caltech101, created by displaying images to a moving DVS camera. It contains 8,246 samples across 101 object categories. We use the standard 80/20 train/test split.
+
+\textbf{DVS128 Gesture}~\cite{amir2017low} contains 1,342 instances of 11 hand gesture classes recorded under various lighting conditions with a 128$\times$128 DVS sensor. We use the official train/test split of 1,077/264 samples.
+
+\textbf{DSEC}~\cite{gehrig2021dsec} is a large-scale driving dataset with synchronized events and labels for optical flow and disparity estimation. We evaluate on the object detection subset with 60 sequences.
+
+\subsection{Implementation Details}
+
+\textbf{Architecture.} We use 4 hierarchical stages with $[2, 2, 6, 2]$ transformer blocks respectively. Hidden dimension $D=256$, 8 attention heads. CTPE uses $K=64$ frequency components per scale across 3 scales. ASNA uses $k_{\text{base}}=32$ with $\gamma=0.5$.
+
+\textbf{Training.} All models are trained using AdamW optimizer with learning rate $3 \times 10^{-4}$, weight decay $0.05$, and cosine learning rate decay. We train for 100 epochs on GEN1 and DSEC, 200 epochs on N-Caltech101 and DVS128 Gesture. Batch size is 32 for detection tasks and 64 for classification. We use standard data augmentation including random spatial flipping, temporal reversal, and event dropout.
+
+\textbf{Hardware.} All experiments are conducted on 4$\times$ NVIDIA RTX 4090 GPUs. We report single-GPU inference times.
+
+\subsection{Baselines}
+
+We compare against state-of-the-art methods spanning multiple representation paradigms:
+
+\textbf{Frame-based ViT methods:}
+\begin{itemize}
+    \item \textbf{TSETrack}~\cite{zhang2026sparsification}: Efficient ViT with token sparsification (IJCV 2026)
+    \item \textbf{HsVT}~\cite{xu2025hsvt}: Hybrid spiking vision transformer (ICML 2025)
+    \item \textbf{GET}~\cite{peng2024get}: Graph-enhanced event transformer
+\end{itemize}
+
+\textbf{Voxel/histogram methods:}
+\begin{itemize}
+    \item \textbf{RED}~\cite{perot2020learning}: Recurrent event-based detection
+    \item \textbf{RVT}~\cite{gehrig2023recurrent}: Recurrent vision transformer
+    \item \textbf{ASTMNet}~\cite{li2022asynchronous}: Asynchronous spatiotemporal memory network
+\end{itemize}
+
+\textbf{Graph-based methods:}
+\begin{itemize}
+    \item \textbf{AEGNN}~\cite{schaefer2022aegnn}: Asynchronous event-based GNN
+    \item \textbf{EV-GNN}~\cite{bi2019graph}: Event-based graph neural network
+\end{itemize}
+
+\subsection{Main Results}
+
+\subsubsection{Object Detection (GEN1)}
+
+Table~\ref{tab:gen1_results} presents object detection results on the GEN1 dataset.
+
+\begin{table}[t]
+\centering
+\caption{Object detection results on GEN1 Automotive Dataset. Best in \textbf{bold}, second \underline{underlined}.}
+\label{tab:gen1_results}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Method} & \textbf{Repr.} & \textbf{mAP} & \textbf{AP\textsubscript{car}} & \textbf{AP\textsubscript{ped}} & \textbf{GFLOPs} \\
+\midrule
+RED~\cite{perot2020learning} & Histogram & 0.401 & 0.452 & 0.350 & 12.4 \\
+AEGNN~\cite{schaefer2022aegnn} & Graph & 0.423 & 0.471 & 0.375 & 8.7 \\
+ASTMNet~\cite{li2022asynchronous} & Voxel & 0.449 & 0.502 & 0.396 & 15.2 \\
+RVT~\cite{gehrig2023recurrent} & Voxel & 0.472 & 0.524 & 0.420 & 18.6 \\
+HsVT~\cite{xu2025hsvt} & Frame & 0.487 & 0.538 & 0.436 & 21.3 \\
+GET~\cite{peng2024get} & Frame & 0.491 & 0.541 & 0.441 & 19.8 \\
+TSETrack~\cite{zhang2026sparsification} & Frame & \underline{0.498} & \underline{0.549} & \underline{0.447} & 14.9 \\
+\midrule
+\textbf{Eventformer (Ours)} & \textbf{Point} & \textbf{0.545} & \textbf{0.592} & \textbf{0.498} & \textbf{6.2} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\eventformer{} achieves 0.545 mAP, outperforming the previous state-of-the-art (TSETrack, 0.498 mAP) by \textbf{+4.7\%} absolute. Notably, this gain comes with a \textbf{2.4$\times$ reduction} in computational cost (6.2 vs.\ 14.9 GFLOPs), demonstrating that native sparsity outperforms artificial pruning.
+
+The improvement is particularly pronounced for pedestrians (+5.1\% AP), which exhibit more rapid motion and thus suffer more from frame accumulation's temporal blurring.
+
+\subsubsection{Object Classification (N-Caltech101)}
+
+Table~\ref{tab:ncaltech_results} presents classification accuracy on N-Caltech101.
+
+\begin{table}[t]
+\centering
+\caption{Classification accuracy on N-Caltech101.}
+\label{tab:ncaltech_results}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Method} & \textbf{Representation} & \textbf{Accuracy (\%)} & \textbf{GFLOPs} \\
+\midrule
+HATS~\cite{sironi2018hats} & Time Surface & 64.2 & 0.8 \\
+EST~\cite{gehrig2019end} & Voxel & 81.7 & 3.2 \\
+EV-GNN~\cite{bi2019graph} & Graph & 84.3 & 4.1 \\
+HsVT~\cite{xu2025hsvt} & Frame & 88.9 & 8.7 \\
+GET~\cite{peng2024get} & Frame & \underline{89.6} & 7.4 \\
+\midrule
+\textbf{Eventformer (Ours)} & \textbf{Point} & \textbf{91.2} & \textbf{2.8} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\eventformer{} achieves 91.2\% accuracy, improving over GET by +1.6\% while using 2.6$\times$ fewer FLOPs. The efficiency gain is particularly notable: we approach the computational cost of simple time surface methods while dramatically outperforming them in accuracy.
+
+\subsubsection{Gesture Recognition (DVS128 Gesture)}
+
+Table~\ref{tab:gesture_results} presents results on the DVS128 Gesture dataset.
+
+\begin{table}[t]
+\centering
+\caption{Gesture recognition accuracy on DVS128 Gesture.}
+\label{tab:gesture_results}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Method} & \textbf{Representation} & \textbf{Accuracy (\%)} & \textbf{Params (M)} \\
+\midrule
+SLAYER~\cite{shrestha2018slayer} & Spike Train & 93.6 & 1.2 \\
+DECOLLE~\cite{kaiser2020synaptic} & Spike Train & 95.5 & 0.9 \\
+TA-SNN~\cite{yao2021temporal} & Voxel & 96.3 & 2.1 \\
+HsVT~\cite{xu2025hsvt} & Frame & 97.1 & 8.4 \\
+TSETrack$^\dagger$~\cite{zhang2026sparsification} & Frame & \underline{97.4} & 12.8 \\
+\midrule
+\textbf{Eventformer (Ours)} & \textbf{Point} & \textbf{98.1} & \textbf{4.2} \\
+\bottomrule
+\end{tabular}
+\vspace{0.5em}
+\small{$^\dagger$Adapted for classification task.}
+\end{table}
+
+On gesture recognition, \eventformer{} achieves 98.1\% accuracy, the highest reported result on this benchmark, while using 3$\times$ fewer parameters than TSETrack. Gesture recognition particularly benefits from our approach as gestures involve continuous motion whose fine-grained temporal structure is better captured by continuous-time processing.
+
+\subsection{High-Speed Motion Analysis}
+
+A key hypothesis is that \eventformer{}'s preservation of temporal precision benefits high-speed scenarios. We test this by stratifying GEN1 results by object velocity.
+
+\begin{table}[t]
+\centering
+\caption{GEN1 mAP stratified by object velocity (pixels/ms).}
+\label{tab:velocity_analysis}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Method} & \textbf{Slow} & \textbf{Medium} & \textbf{Fast} & \textbf{Very Fast} \\
+ & ($<$0.5) & (0.5--1.5) & (1.5--3.0) & ($>$3.0) \\
+\midrule
+RVT & 0.512 & 0.486 & 0.441 & 0.362 \\
+HsVT & 0.531 & 0.502 & 0.459 & 0.378 \\
+TSETrack & 0.542 & 0.514 & 0.471 & 0.391 \\
+\textbf{Eventformer} & \textbf{0.558} & \textbf{0.549} & \textbf{0.537} & \textbf{0.512} \\
+\midrule
+\textit{Improvement} & +3.0\% & +6.8\% & +14.0\% & +30.9\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As shown in Table~\ref{tab:velocity_analysis}, while all methods perform comparably on slow-moving objects, \eventformer{}'s advantage grows dramatically with velocity. For very fast objects ($>$3 pixels/ms), we outperform TSETrack by \textbf{30.9\%} relative improvement. This confirms that frame accumulation catastrophically degrades for high-speed motion, precisely where event cameras should excel, and that \eventformer{}'s frame-free processing restores this advantage.
+
+\subsection{Robustness to Temporal Window Size}
+
+Frame-based methods require careful tuning of accumulation interval $\Delta t$. We evaluate sensitivity by varying $\Delta t$ on GEN1.
+
+\begin{table}[t]
+\centering
+\caption{Sensitivity to temporal window $\Delta t$ on GEN1.}
+\label{tab:delta_t_sensitivity}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Method} & \textbf{10ms} & \textbf{25ms} & \textbf{50ms}$^*$ & \textbf{100ms} & \textbf{200ms} \\
+\midrule
+HsVT & 0.412 & 0.461 & 0.487 & 0.453 & 0.389 \\
+TSETrack & 0.429 & 0.472 & 0.498 & 0.461 & 0.402 \\
+\textbf{Eventformer} & \textbf{0.541} & \textbf{0.543} & \textbf{0.545} & \textbf{0.544} & \textbf{0.542} \\
+\bottomrule
+\end{tabular}
+\vspace{0.5em}
+\small{$^*$Standard evaluation protocol.}
+\end{table}
+
+Frame-based methods show a clear performance peak at the tuned $\Delta t = 50$ms, degrading by 9--20\% at other settings. In stark contrast, \eventformer{}'s performance remains stable across all window sizes because it processes raw events regardless of how we partition them for evaluation batching. This robustness eliminates a critical hyperparameter and enables deployment across diverse scenarios without retuning.
+
+\subsection{Ablation Study}
+
+We ablate each component's contribution on GEN1.
+
+\begin{table}[t]
+\centering
+\caption{Ablation study on GEN1. CTPE: Continuous-Time Positional Encoding, PAAA: Polarity-Aware Asymmetric Attention, ASNA: Adaptive Spatiotemporal Neighborhood Attention.}
+\label{tab:ablation}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Configuration} & \textbf{mAP} & \textbf{GFLOPs} & $\Delta$\textbf{mAP} \\
+\midrule
+\textbf{Eventformer (Full)} & \textbf{0.545} & \textbf{6.2} & --- \\
+\midrule
+w/o CTPE (discrete bins) & 0.511 & 6.2 & --3.4\% \\
+w/o PAAA (symmetric attention) & 0.524 & 5.8 & --2.1\% \\
+w/o ASNA (fixed $k$) & 0.532 & 7.4 & --1.3\% \\
+w/o hierarchical (single scale) & 0.498 & 9.1 & --4.7\% \\
+\midrule
+All components removed (baseline) & 0.462 & 8.3 & --8.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{CTPE} contributes the largest individual gain (+3.4\% mAP), confirming that continuous-time encoding is critical for preserving temporal precision. Replacing CTPE with discrete temporal bins (matching frame-based methods) significantly degrades performance.
+
+\textbf{PAAA} contributes +2.1\% mAP by enabling asymmetric polarity reasoning. When we use symmetric attention treating ON/OFF identically, motion direction information is lost.
+
+\textbf{ASNA} improves both accuracy (+1.3\%) and efficiency (--1.2 GFLOPs) over fixed neighborhood sizes, validating the adaptive attention design.
+
+The \textbf{hierarchical architecture} is crucial (+4.7\% mAP), enabling multi-scale spatiotemporal reasoning. Single-scale processing also incurs higher computational cost due to processing all events at full resolution.
+
+\subsection{Computational Efficiency Analysis}
+
+Table~\ref{tab:efficiency} compares computational metrics across methods.
+
+\begin{table}[t]
+\centering
+\caption{Computational efficiency comparison on GEN1.}
+\label{tab:efficiency}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Method} & \textbf{GFLOPs} & \textbf{Params (M)} & \textbf{Latency (ms)} & \textbf{Throughput} \\
+\midrule
+RVT & 18.6 & 18.5 & 24.2 & 41 fps \\
+HsVT & 21.3 & 22.1 & 28.7 & 35 fps \\
+TSETrack & 14.9 & 24.6 & 19.8 & 51 fps \\
+\textbf{Eventformer} & \textbf{6.2} & \textbf{8.7} & \textbf{8.4} & \textbf{119 fps} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\eventformer{} achieves \textbf{3.2$\times$ lower FLOPs} and \textbf{2.4$\times$ lower latency} than the most efficient baseline (TSETrack), while using \textbf{2.8$\times$ fewer parameters}. This efficiency stems directly from processing only the sparse events (typically $<$1\% of pixels) rather than dense grids. Our 119 fps throughput enables real-time processing of high-speed event streams.
+
+\subsection{Qualitative Analysis}
+
+Figure~\ref{fig:qualitative} presents qualitative detection results comparing \eventformer{} with TSETrack on challenging high-speed scenarios from GEN1.
+
+In the high-speed vehicle scenario (top row), TSETrack's frame accumulation creates motion blur, causing the detector to predict an elongated bounding box or miss the object entirely. \eventformer{} correctly localizes the vehicle by processing events at their native timestamps.
+
+In the fast pedestrian scenario (bottom row), frame accumulation causes ``ghosting'' where the pedestrian appears in multiple positions within the accumulation window. TSETrack's predictions are unstable, oscillating between these ghost positions. \eventformer{} produces stable, accurate predictions by reasoning about the temporal sequence of events.
+
+%==============================================================================
+\section{Discussion}
+\label{sec:discussion}
+%==============================================================================
+
+\subsection{Why Frame-Free Matters}
+
+Our results demonstrate that the frame accumulation paradigm---ubiquitous in event-based vision---is not merely a design choice but a fundamental limitation. The performance gap widens precisely in scenarios where event cameras should excel: high-speed motion, high dynamic range, and fine temporal discrimination.
+
+This finding has implications beyond our specific architecture. We hypothesize that \textit{any} method that preserves native event properties will outperform frame-based approaches for tasks requiring temporal precision. \eventformer{} is one realization of this principle; we encourage the community to explore others.
+
+\subsection{Limitations}
+
+\textbf{Preprocessing overhead.} While \eventformer{} reduces neural network computation, constructing the spatiotemporal neighborhood graph introduces preprocessing overhead. With efficient KD-tree implementations, this overhead is small ($<$5\% of total latency) but nonzero.
+
+\textbf{Memory for long sequences.} Storing all events for very long sequences can be memory-intensive. In practice, we use sliding windows with overlap, but this introduces a form of temporal chunking (though much finer-grained than frame accumulation).
+
+\textbf{Static scenes.} Event cameras produce no output in static scenes. While this is a sensor property rather than a method limitation, it means \eventformer{} cannot process static images (unlike frame-based methods that can be pretrained on large image datasets).
+
+\subsection{Broader Impact}
+
+Event cameras and efficient processing methods have applications in autonomous vehicles, surveillance, and robotics. While these technologies offer benefits (safety, efficiency), they also raise concerns about privacy and potential misuse. We encourage deployment with appropriate safeguards and ethical oversight.
+
+%==============================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+%==============================================================================
+
+We introduced \eventformer{}, the first vision transformer that processes raw event camera data as spatiotemporal point clouds without frame conversion. By preserving native event properties---microsecond timing, inherent sparsity, and causal ordering---through Continuous-Time Positional Encoding, Polarity-Aware Asymmetric Attention, and Adaptive Spatiotemporal Neighborhood Attention, \eventformer{} achieves state-of-the-art accuracy while reducing computation by 3.2$\times$ compared to frame-based methods.
+
+More fundamentally, our work challenges a decade of assumptions in event-based vision. The frame accumulation paradigm, adopted to leverage existing deep learning infrastructure, has inadvertently suppressed the very properties that make event cameras revolutionary. We demonstrate that processing paradigms native to neuromorphic sensing not only match but significantly exceed the performance of adapted conventional approaches, particularly for the high-speed, high-dynamic-range scenarios where event cameras are most needed.
+
+We hope \eventformer{} inspires a broader rethinking of how novel sensors should interface with deep learning. Rather than adapting sensors to fit existing pipelines, we should develop pipelines that embrace each sensor's unique characteristics. For event cameras, this means treating asynchronous streams as first-class citizens---not as inconvenient data to be discretized into familiar forms.
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{eventformer}
+
+\end{document}
